@@ -20,6 +20,31 @@ def save_webhook(body):
         f.write(json.dumps(record, ensure_ascii=False))
         f.write("\n")
 
+
+def load_saved_numbers():
+    if not DATA_FILE.exists():
+        return []
+
+    numbers = []
+    with DATA_FILE.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+                body = record.get("body", {})
+                value = body.get("entry", [])[0].get("changes", [])[0].get("value", {})
+                if "messages" in value:
+                    msg = value["messages"][0]
+                    phone = msg.get("from")
+                    if phone:
+                        numbers.append(phone)
+            except Exception:
+                continue
+    return sorted(set(numbers))
+
+
 @app.get("/")
 def home():
     return "i2V WhatsApp Webhook Running"
@@ -29,6 +54,12 @@ def verify():
     if request.args.get("hub.mode")=="subscribe" and request.args.get("hub.verify_token")==VERIFY_TOKEN:
         return request.args.get("hub.challenge"),200
     return "Verification Failed",403
+
+@app.get("/numbers")
+def list_numbers():
+    numbers = load_saved_numbers()
+    return {"numbers": numbers}
+
 
 @app.post("/webhook")
 def webhook():
