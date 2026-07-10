@@ -1,9 +1,24 @@
 from flask import Flask, request
 import requests, os, json
-app=Flask(__name__)
-VERIFY_TOKEN=os.getenv("VERIFY_TOKEN", "I2vWebhook2026")
-ACCESS_TOKEN=os.getenv("ACCESS_TOKEN", "")
-PHONE_NUMBER_ID=os.getenv("PHONE_NUMBER_ID", "")
+from pathlib import Path
+from datetime import datetime
+
+app = Flask(__name__)
+VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "I2vWebhook2026")
+ACCESS_TOKEN = os.getenv("ACCESS_TOKEN", "")
+PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "")
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(exist_ok=True)
+DATA_FILE = DATA_DIR / "messages.log"
+
+def save_webhook(body):
+    record = {
+        "received_at": datetime.utcnow().isoformat() + "Z",
+        "body": body,
+    }
+    with DATA_FILE.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False))
+        f.write("\n")
 
 @app.get("/")
 def home():
@@ -19,6 +34,7 @@ def verify():
 def webhook():
     body=request.get_json()
     print(json.dumps(body,indent=2))
+    save_webhook(body)
     try:
         value=body["entry"][0]["changes"][0]["value"]
         if "messages" in value:
