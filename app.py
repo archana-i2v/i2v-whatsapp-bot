@@ -1,9 +1,9 @@
 from flask import Flask, request
 import requests, os, json
 app=Flask(__name__)
-VERIFY_TOKEN=os.getenv("VERIFY_TOKEN")
-ACCESS_TOKEN=os.getenv("ACCESS_TOKEN")
-PHONE_NUMBER_ID=os.getenv("PHONE_NUMBER_ID")
+VERIFY_TOKEN=os.getenv("VERIFY_TOKEN", "I2vWebhook2026")
+ACCESS_TOKEN=os.getenv("ACCESS_TOKEN", "")
+PHONE_NUMBER_ID=os.getenv("PHONE_NUMBER_ID", "")
 
 @app.get("/")
 def home():
