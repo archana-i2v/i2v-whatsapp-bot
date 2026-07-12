@@ -21,15 +21,24 @@ class WebhookTests(unittest.TestCase):
         self.file_patch = patch.object(webhook_app, "DATA_FILE", self.data_file)
         self.database_patch = patch.object(webhook_app, "DATABASE_FILE", self.database_file)
         self.employee_numbers_patch = patch.object(webhook_app, "EMPLOYEE_PHONE_NUMBERS", "")
+        self.now_patch = patch.object(
+            webhook_app,
+            "india_now",
+            return_value=webhook_app.datetime(
+                2026, 7, 13, 9, 30, tzinfo=webhook_app.INDIA_TIMEZONE
+            ),
+        )
         self.file_patch.start()
         self.database_patch.start()
         self.employee_numbers_patch.start()
+        self.now_patch.start()
         self.client = webhook_app.app.test_client()
 
     def tearDown(self):
         self.file_patch.stop()
         self.database_patch.stop()
         self.employee_numbers_patch.stop()
+        self.now_patch.stop()
         self.temp_dir.cleanup()
 
     def register_employee(self, phone):
@@ -61,6 +70,7 @@ class WebhookTests(unittest.TestCase):
             sent["interactive"]["action"]["buttons"][1]["reply"]["id"],
             "attendance_no",
         )
+        self.assertIn("13 Jul 2026 at 09:30 AM IST", sent["interactive"]["body"]["text"])
 
         self.client.post("/webhook", json=payload({
             "from": "919876543210",
@@ -163,6 +173,16 @@ class WebhookTests(unittest.TestCase):
     def test_indian_phone_number_is_normalized(self):
         self.assertEqual(webhook_app.normalize_phone("9989309953"), "919989309953")
         self.assertEqual(webhook_app.normalize_phone("+91 99893 09953"), "919989309953")
+
+    def test_sunday_is_reported_as_holiday_without_buttons(self):
+        sunday = webhook_app.datetime(
+            2026, 7, 12, 10, 0, tzinfo=webhook_app.INDIA_TIMEZONE
+        )
+        response = webhook_app.greeting_payload("919876543210", sunday)
+
+        self.assertEqual(response["type"], "text")
+        self.assertIn("Sunday", response["text"]["body"])
+        self.assertIn("holiday", response["text"]["body"])
 
     @patch("app.requests.post")
     def test_incoming_number_is_saved_and_listed(self, post):

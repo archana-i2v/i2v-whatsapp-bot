@@ -32,6 +32,10 @@ DEFAULT_REPLY = (
 )
 
 
+def india_now():
+    return datetime.now(INDIA_TIMEZONE)
+
+
 def reply_for_message(text):
     """Choose an automatic reply for an incoming text message."""
     replies = {
@@ -68,8 +72,10 @@ def attendance_flow_payload(phone):
     }
 
 
-def attendance_button_payload(phone):
+def attendance_button_payload(phone, now=None):
     """Ask a registered employee whether they want to add attendance."""
+    now = now or india_now()
+    formatted_time = now.strftime("%d %b %Y at %I:%M %p IST")
     return {
         "messaging_product": "whatsapp",
         "recipient_type": "individual",
@@ -77,7 +83,9 @@ def attendance_button_payload(phone):
         "type": "interactive",
         "interactive": {
             "type": "button",
-            "body": {"text": "Do you want to add attendance?"},
+            "body": {
+                "text": f"Do you want to add attendance for today, {formatted_time}?"
+            },
             "action": {
                 "buttons": [
                     {
@@ -92,6 +100,24 @@ def attendance_button_payload(phone):
             },
         },
     }
+
+
+def greeting_payload(phone, now=None):
+    """Return a holiday message on Sunday or the attendance question otherwise."""
+    now = now or india_now()
+    if now.weekday() == 6:
+        return {
+            "messaging_product": "whatsapp",
+            "to": phone,
+            "type": "text",
+            "text": {
+                "body": (
+                    f"Today, {now.strftime('%d %b %Y')}, is Sunday. "
+                    "It is a holiday and we are not working today."
+                )
+            },
+        }
+    return attendance_button_payload(phone, now)
 
 
 def initialize_database():
@@ -401,7 +427,7 @@ def webhook():
             url=f"https://graph.facebook.com/v23.0/{PHONE_NUMBER_ID}/messages"
             headers={"Authorization":f"Bearer {ACCESS_TOKEN}","Content-Type":"application/json"}
             if action == "hi":
-                payload = attendance_button_payload(phone)
+                payload = greeting_payload(phone)
             elif action == "attendance_yes":
                 attendance_result = mark_employee_present(phone)
                 if attendance_result == "marked":
