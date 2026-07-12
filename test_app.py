@@ -62,6 +62,24 @@ class WebhookTests(unittest.TestCase):
             400,
         )
 
+    @patch("app.requests.post")
+    def test_messages_page_shows_phone_time_and_escaped_text(self, post):
+        post.return_value.raise_for_status.return_value = None
+        self.client.post("/webhook", json=payload({
+            "from": "919999999999",
+            "timestamp": "1783773000",
+            "type": "text",
+            "text": {"body": "Price < 100?"},
+        }))
+
+        response = self.client.get("/messages")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"919999999999", response.data)
+        self.assertIn(b"IST", response.data)
+        self.assertIn(b"Price &lt; 100?", response.data)
+        self.assertNotIn(b"Price < 100?", response.data)
+
 
 if __name__ == "__main__":
     unittest.main()

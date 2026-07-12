@@ -3,6 +3,7 @@ import requests, os, json
 from pathlib import Path
 from datetime import datetime, timezone
 from html import escape
+from zoneinfo import ZoneInfo
 
 app = Flask(__name__)
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "I2vWebhook2026")
@@ -11,6 +12,7 @@ PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "")
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
 DATA_FILE = DATA_DIR / "messages.log"
+INDIA_TIMEZONE = ZoneInfo("Asia/Kolkata")
 
 def save_webhook(body):
     record = {
@@ -78,6 +80,57 @@ def load_hi_numbers():
     return sorted(set(hi_numbers))
 
 
+def message_text(message):
+    """Return readable content for text and common non-text WhatsApp messages."""
+    message_type = message.get("type", "text")
+    if message_type == "text":
+        return message.get("text", {}).get("body", "")
+    if message_type == "button":
+        return message.get("button", {}).get("text", "[button response]")
+    if message_type == "interactive":
+        interactive = message.get("interactive", {})
+        response = interactive.get("button_reply") or interactive.get("list_reply") or {}
+        return response.get("title") or response.get("id") or "[interactive response]"
+
+    media = message.get(message_type, {})
+    caption = media.get("caption", "") if isinstance(media, dict) else ""
+    return caption or f"[{message_type}]"
+
+
+def message_datetime(message, received_at):
+    """Use WhatsApp's sent timestamp, falling back to webhook receipt time."""
+    try:
+        value = datetime.fromtimestamp(int(message["timestamp"]), timezone.utc)
+    except (KeyError, TypeError, ValueError, OSError):
+        try:
+            value = datetime.fromisoformat(received_at.replace("Z", "+00:00"))
+        except (AttributeError, TypeError, ValueError):
+            return "Unknown"
+    return value.astimezone(INDIA_TIMEZONE).strftime("%d %b %Y, %I:%M:%S %p IST")
+
+
+def load_message_rows():
+    if not DATA_FILE.exists():
+        return []
+
+    rows = []
+    with DATA_FILE.open("r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                record = json.loads(line)
+                for msg in iter_messages(record.get("body", {})):
+                    phone = msg.get("from")
+                    if phone:
+                        rows.append({
+                            "phone": phone,
+                            "time": message_datetime(msg, record.get("received_at")),
+                            "message": message_text(msg),
+                        })
+            except (json.JSONDecodeError, TypeError):
+                continue
+    return list(reversed(rows))
+
+
 @app.get("/")
 def home():
     return "i2V WhatsApp Webhook Running"
@@ -103,6 +156,31 @@ def list_hi_numbers():
         html += f"<li>{escape(number)}</li>"
     html += "</ul>"
     return html
+
+
+@app.get("/messages")
+def list_messages():
+    rows = load_message_rows()
+    table_rows = "".join(
+        "<tr>"
+        f"<td>{escape(row['phone'])}</td>"
+        f"<td>{escape(row['time'])}</td>"
+        f"<td>{escape(row['message'])}</td>"
+        "</tr>"
+        for row in rows
+    )
+    empty = '<tr><td colspan="3">No messages have been recorded yet.</td></tr>'
+    return f"""<!doctype html>
+<html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WhatsApp messages</title>
+<style>
+body{{font-family:Arial,sans-serif;margin:24px;color:#1f2937}}
+table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #d1d5db;padding:10px;text-align:left}}
+th{{background:#075e54;color:white}}tr:nth-child(even){{background:#f3f4f6}}
+</style></head><body><h1>WhatsApp messages</h1>
+<p>{len(rows)} message(s), newest first. Times are shown in India Standard Time.</p>
+<table><thead><tr><th>Phone number</th><th>Date and time</th><th>Message</th></tr></thead>
+<tbody>{table_rows or empty}</tbody></table></body></html>"""
 
 
 @app.post("/webhook")

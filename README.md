@@ -24,6 +24,9 @@ https://YOUR-RENDER-APP.onrender.com/numbers
 View numbers that sent "hi":
 https://YOUR-RENDER-APP.onrender.com/hi-numbers
 
+View phone numbers, message dates/times, and message contents:
+https://YOUR-RENDER-APP.onrender.com/messages
+
 Run tests:
 python -m unittest -v
 
