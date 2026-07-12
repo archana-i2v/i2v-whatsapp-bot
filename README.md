@@ -17,3 +17,15 @@ Deploy to Render:
 
 Webhook URL:
 https://YOUR-RENDER-APP.onrender.com/webhook
+
+View captured sender numbers:
+https://YOUR-RENDER-APP.onrender.com/numbers
+
+View numbers that sent "hi":
+https://YOUR-RENDER-APP.onrender.com/hi-numbers
+
+Run tests:
+python -m unittest -v
+
+Note: Render's default filesystem is ephemeral. Use a Render persistent disk or a
+database if these records must survive deployments and service restarts.
