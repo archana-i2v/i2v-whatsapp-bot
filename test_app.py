@@ -17,13 +17,74 @@ class WebhookTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.data_file = Path(self.temp_dir.name) / "messages.log"
+        self.database_file = Path(self.temp_dir.name) / "app.db"
         self.file_patch = patch.object(webhook_app, "DATA_FILE", self.data_file)
+        self.database_patch = patch.object(webhook_app, "DATABASE_FILE", self.database_file)
+        self.employee_numbers_patch = patch.object(webhook_app, "EMPLOYEE_PHONE_NUMBERS", "")
         self.file_patch.start()
+        self.database_patch.start()
+        self.employee_numbers_patch.start()
         self.client = webhook_app.app.test_client()
 
     def tearDown(self):
         self.file_patch.stop()
+        self.database_patch.stop()
+        self.employee_numbers_patch.stop()
         self.temp_dir.cleanup()
+
+    def register_employee(self, phone):
+        webhook_app.initialize_database()
+        with webhook_app.closing(webhook_app.sqlite3.connect(self.database_file)) as connection:
+            with connection:
+                connection.execute(
+                    "INSERT INTO employees (phone_number) VALUES (?)",
+                    (phone,),
+                )
+
+    @patch("app.requests.post")
+    @patch.object(webhook_app, "ATTENDANCE_FLOW_ID", "123456789")
+    def test_registered_employee_can_open_attendance_flow(self, post):
+        post.return_value.raise_for_status.return_value = None
+        self.register_employee("919876543210")
+
+        self.client.post("/webhook", json=payload(
+            {"from": "919876543210", "text": {"body": "  HI  "}},
+        ))
+
+        sent = post.call_args.kwargs["json"]
+        self.assertEqual(sent["type"], "interactive")
+        self.assertEqual(sent["interactive"]["type"], "button")
+        self.assertEqual(
+            sent["interactive"]["action"]["buttons"][0]["reply"]["id"],
+            "add_attendance",
+        )
+
+        self.client.post("/webhook", json=payload({
+            "from": "919876543210",
+            "type": "interactive",
+            "interactive": {
+                "type": "button_reply",
+                "button_reply": {"id": "add_attendance", "title": "Add attendance"},
+            },
+        }))
+
+        sent = post.call_args.kwargs["json"]
+        self.assertEqual(sent["interactive"]["type"], "flow")
+        parameters = sent["interactive"]["action"]["parameters"]
+        self.assertEqual(parameters["flow_id"], "123456789")
+        self.assertEqual(parameters["flow_action_payload"]["screen"], "ATTENDANCE")
+
+    @patch("app.requests.post")
+    def test_unregistered_employee_is_rejected(self, post):
+        post.return_value.raise_for_status.return_value = None
+
+        self.client.post("/webhook", json=payload(
+            {"from": "911234567890", "text": {"body": "Hi"}},
+        ))
+
+        sent = post.call_args.kwargs["json"]
+        self.assertEqual(sent["type"], "text")
+        self.assertIn("not registered", sent["text"]["body"])
 
     @patch("app.requests.post")
     def test_incoming_number_is_saved_and_listed(self, post):

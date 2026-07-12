@@ -1,17 +1,21 @@
 from flask import Flask, request
-import requests, os, json
+import requests, os, json, sqlite3
 from pathlib import Path
 from datetime import datetime, timezone
 from html import escape
 from zoneinfo import ZoneInfo
+from contextlib import closing
 
 app = Flask(__name__)
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "I2vWebhook2026")
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN", "")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "")
+ATTENDANCE_FLOW_ID = os.getenv("ATTENDANCE_FLOW_ID", "")
+EMPLOYEE_PHONE_NUMBERS = os.getenv("EMPLOYEE_PHONE_NUMBERS", "")
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
 DATA_FILE = DATA_DIR / "messages.log"
+DATABASE_FILE = DATA_DIR / "app.db"
 INDIA_TIMEZONE = ZoneInfo("Asia/Kolkata")
 
 DEFAULT_REPLY = (
@@ -28,6 +32,96 @@ def reply_for_message(text):
         "play": "OK, I will send you details of the game.",
     }
     return replies.get(text.strip().lower(), DEFAULT_REPLY)
+
+
+def attendance_flow_payload(phone):
+    """Build the interactive message that opens the published attendance Flow."""
+    return {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": phone,
+        "type": "interactive",
+        "interactive": {
+            "type": "flow",
+            "header": {"type": "text", "text": "Daily attendance"},
+            "body": {"text": "Mark attendance and enter your day details."},
+            "footer": {"text": "i2V Consulting Private Limited"},
+            "action": {
+                "name": "flow",
+                "parameters": {
+                    "flow_message_version": "3",
+                    "flow_token": f"attendance-{phone}",
+                    "flow_id": ATTENDANCE_FLOW_ID,
+                    "flow_cta": "Mark attendance",
+                    "flow_action": "navigate",
+                    "flow_action_payload": {"screen": "ATTENDANCE"},
+                },
+            },
+        },
+    }
+
+
+def attendance_button_payload(phone):
+    """Ask a registered employee whether they want to add attendance."""
+    return {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": phone,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {"text": "Your employee number is registered. Do you want to add attendance?"},
+            "action": {
+                "buttons": [{
+                    "type": "reply",
+                    "reply": {"id": "add_attendance", "title": "Add attendance"},
+                }]
+            },
+        },
+    }
+
+
+def initialize_database():
+    """Create the employee table and add numbers supplied by the environment."""
+    with closing(sqlite3.connect(DATABASE_FILE)) as connection:
+        with connection:
+            connection.execute("""
+                CREATE TABLE IF NOT EXISTS employees (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    phone_number TEXT NOT NULL UNIQUE,
+                    name TEXT,
+                    active INTEGER NOT NULL DEFAULT 1
+                )
+            """)
+            numbers = [number.strip().lstrip("+") for number in EMPLOYEE_PHONE_NUMBERS.split(",")]
+            connection.executemany(
+                "INSERT OR IGNORE INTO employees (phone_number) VALUES (?)",
+                [(number,) for number in numbers if number],
+            )
+
+
+def is_registered_employee(phone):
+    initialize_database()
+    normalized_phone = str(phone).strip().lstrip("+")
+    with closing(sqlite3.connect(DATABASE_FILE)) as connection:
+        employee = connection.execute(
+            "SELECT 1 FROM employees WHERE phone_number = ? AND active = 1",
+            (normalized_phone,),
+        ).fetchone()
+    return employee is not None
+
+
+def incoming_action(message):
+    """Return normalized text or a reply-button ID from an inbound message."""
+    if message.get("type", "text") == "text":
+        return message.get("text", {}).get("body", "").strip().lower()
+    if message.get("type") == "interactive":
+        interactive = message.get("interactive", {})
+        reply = interactive.get("button_reply") or interactive.get("list_reply") or {}
+        return reply.get("id", "").strip().lower()
+    if message.get("type") == "button":
+        return message.get("button", {}).get("payload", "").strip().lower()
+    return ""
 
 def save_webhook(body):
     record = {
@@ -104,6 +198,13 @@ def message_text(message):
         return message.get("button", {}).get("text", "[button response]")
     if message_type == "interactive":
         interactive = message.get("interactive", {})
+        flow_reply = interactive.get("nfm_reply", {})
+        if flow_reply.get("response_json"):
+            try:
+                response = json.loads(flow_reply["response_json"])
+                return "Attendance form: " + json.dumps(response, ensure_ascii=False)
+            except (json.JSONDecodeError, TypeError):
+                return flow_reply["response_json"]
         response = interactive.get("button_reply") or interactive.get("list_reply") or {}
         return response.get("title") or response.get("id") or "[interactive response]"
 
@@ -210,15 +311,36 @@ def webhook():
         try:
             phone=msg["from"]
             text=msg.get("text",{}).get("body","")
+            action = incoming_action(msg)
             print(phone,text)
             url=f"https://graph.facebook.com/v23.0/{PHONE_NUMBER_ID}/messages"
             headers={"Authorization":f"Bearer {ACCESS_TOKEN}","Content-Type":"application/json"}
-            payload={
-                "messaging_product": "whatsapp",
-                "to": phone,
-                "type": "text",
-                "text": {"body": reply_for_message(text)},
-            }
+            if action == "hi":
+                if is_registered_employee(phone):
+                    payload = attendance_button_payload(phone)
+                else:
+                    payload = {
+                        "messaging_product": "whatsapp",
+                        "to": phone,
+                        "type": "text",
+                        "text": {"body": "This phone number is not registered as an employee."},
+                    }
+            elif action == "add_attendance" and ATTENDANCE_FLOW_ID:
+                payload = attendance_flow_payload(phone)
+            elif action == "add_attendance":
+                payload = {
+                    "messaging_product": "whatsapp",
+                    "to": phone,
+                    "type": "text",
+                    "text": {"body": "The attendance form is not configured yet. Please contact your administrator."},
+                }
+            else:
+                payload={
+                    "messaging_product": "whatsapp",
+                    "to": phone,
+                    "type": "text",
+                    "text": {"body": reply_for_message(text)},
+                }
             response = requests.post(url,headers=headers,json=payload,timeout=15)
             response.raise_for_status()
         except Exception as e:

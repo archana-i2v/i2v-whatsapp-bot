@@ -1,0 +1,129 @@
+{
+  "version": "7.2",
+  "screens": [
+    {
+      "id": "ATTENDANCE",
+      "title": "Mark attendance",
+      "data": {},
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "attendance_form",
+            "children": [
+              {
+                "type": "CheckboxGroup",
+                "name": "attendance",
+                "label": "Attendance",
+                "required": true,
+                "min-selected-items": 1,
+                "max-selected-items": 1,
+                "data-source": [{"id": "present", "title": "Present"}]
+              },
+              {
+                "type": "TextInput",
+                "name": "km",
+                "label": "KM",
+                "input-type": "number",
+                "required": true
+              },
+              {
+                "type": "CheckboxGroup",
+                "name": "night_halt",
+                "label": "Night halt",
+                "data-source": [{"id": "yes", "title": "Yes"}]
+              },
+              {
+                "type": "Footer",
+                "label": "Add activity",
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {"type": "screen", "name": "ACTIVITY"},
+                  "payload": {
+                    "attendance": "${form.attendance}",
+                    "km": "${form.km}",
+                    "night_halt": "${form.night_halt}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "ACTIVITY",
+      "title": "Add activity",
+      "data": {
+        "attendance": {"type": "array", "items": {"type": "string"}, "__example__": ["present"]},
+        "km": {"type": "string", "__example__": "25"},
+        "night_halt": {"type": "array", "items": {"type": "string"}, "__example__": []}
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "activity_form",
+            "children": [
+              {"type": "TextArea", "name": "activity", "label": "Activity details", "required": true},
+              {
+                "type": "Footer",
+                "label": "Add expense",
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {"type": "screen", "name": "EXPENSE"},
+                  "payload": {
+                    "attendance": "${data.attendance}",
+                    "km": "${data.km}",
+                    "night_halt": "${data.night_halt}",
+                    "activity": "${form.activity}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "EXPENSE",
+      "title": "Add expense",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "attendance": {"type": "array", "items": {"type": "string"}, "__example__": ["present"]},
+        "km": {"type": "string", "__example__": "25"},
+        "night_halt": {"type": "array", "items": {"type": "string"}, "__example__": []},
+        "activity": {"type": "string", "__example__": "Visited customer"}
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "expense_form",
+            "children": [
+              {"type": "TextInput", "name": "expense", "label": "Expense amount", "input-type": "number"},
+              {
+                "type": "Footer",
+                "label": "End day",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "attendance": "${data.attendance}",
+                    "km": "${data.km}",
+                    "night_halt": "${data.night_halt}",
+                    "activity": "${data.activity}",
+                    "expense": "${form.expense}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
