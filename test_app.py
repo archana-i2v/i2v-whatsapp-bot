@@ -42,8 +42,7 @@ class WebhookTests(unittest.TestCase):
                 )
 
     @patch("app.requests.post")
-    @patch.object(webhook_app, "ATTENDANCE_FLOW_ID", "123456789")
-    def test_registered_employee_can_open_attendance_flow(self, post):
+    def test_registered_employee_can_mark_attendance(self, post):
         post.return_value.raise_for_status.return_value = None
         self.register_employee("919876543210")
 
@@ -56,7 +55,11 @@ class WebhookTests(unittest.TestCase):
         self.assertEqual(sent["interactive"]["type"], "button")
         self.assertEqual(
             sent["interactive"]["action"]["buttons"][0]["reply"]["id"],
-            "add_attendance",
+            "attendance_yes",
+        )
+        self.assertEqual(
+            sent["interactive"]["action"]["buttons"][1]["reply"]["id"],
+            "attendance_no",
         )
 
         self.client.post("/webhook", json=payload({
@@ -64,18 +67,48 @@ class WebhookTests(unittest.TestCase):
             "type": "interactive",
             "interactive": {
                 "type": "button_reply",
-                "button_reply": {"id": "add_attendance", "title": "Add attendance"},
+                "button_reply": {"id": "attendance_yes", "title": "Yes"},
             },
         }))
 
         sent = post.call_args.kwargs["json"]
-        self.assertEqual(sent["interactive"]["type"], "flow")
-        parameters = sent["interactive"]["action"]["parameters"]
-        self.assertEqual(parameters["flow_id"], "123456789")
-        self.assertEqual(parameters["flow_action_payload"]["screen"], "ATTENDANCE")
+        self.assertIn("marked Present", sent["text"]["body"])
+        with webhook_app.closing(webhook_app.sqlite3.connect(self.database_file)) as connection:
+            attendance = connection.execute(
+                "SELECT status FROM attendance"
+            ).fetchall()
+        self.assertEqual(attendance, [("Present",)])
+
+        self.client.post("/webhook", json=payload({
+            "from": "919876543210",
+            "type": "interactive",
+            "interactive": {
+                "type": "button_reply",
+                "button_reply": {"id": "attendance_yes", "title": "Yes"},
+            },
+        }))
+        self.assertIn("already marked", post.call_args.kwargs["json"]["text"]["body"])
 
     @patch("app.requests.post")
-    def test_unregistered_employee_is_rejected(self, post):
+    def test_attendance_no_sends_default_reply(self, post):
+        post.return_value.raise_for_status.return_value = None
+
+        self.client.post("/webhook", json=payload({
+            "from": "919876543210",
+            "type": "interactive",
+            "interactive": {
+                "type": "button_reply",
+                "button_reply": {"id": "attendance_no", "title": "No"},
+            },
+        }))
+
+        self.assertEqual(
+            post.call_args.kwargs["json"]["text"]["body"],
+            webhook_app.DEFAULT_REPLY,
+        )
+
+    @patch("app.requests.post")
+    def test_unregistered_employee_is_rejected_after_yes(self, post):
         post.return_value.raise_for_status.return_value = None
 
         self.client.post("/webhook", json=payload(
@@ -83,8 +116,53 @@ class WebhookTests(unittest.TestCase):
         ))
 
         sent = post.call_args.kwargs["json"]
-        self.assertEqual(sent["type"], "text")
-        self.assertIn("not registered", sent["text"]["body"])
+        self.assertEqual(sent["type"], "interactive")
+        self.assertEqual(sent["interactive"]["type"], "button")
+
+        self.client.post("/webhook", json=payload({
+            "from": "911234567890",
+            "type": "interactive",
+            "interactive": {
+                "type": "button_reply",
+                "button_reply": {"id": "attendance_yes", "title": "Yes"},
+            },
+        }))
+
+        sent = post.call_args.kwargs["json"]
+        self.assertIn("not an i2V employee", sent["text"]["body"])
+        self.assertIn("9989309953", sent["text"]["body"])
+
+    def test_mock_employees_are_created(self):
+        webhook_app.initialize_database()
+        with webhook_app.closing(webhook_app.sqlite3.connect(self.database_file)) as connection:
+            employees = connection.execute(
+                """SELECT employee_code, phone_number, name, department,
+                          designation, status
+                   FROM employees ORDER BY phone_number"""
+            ).fetchall()
+        self.assertIn(
+            ("I2V001", "919989309953", "Archana Singh", "IT", "IT Head", "active"),
+            employees,
+        )
+        self.assertIn(
+            ("I2V002", "630202065047", "SVS", "Management", "Managing Director", "active"),
+            employees,
+        )
+        self.assertIn(
+            (
+                "I2V003",
+                "916350369740",
+                "Employee 6350369740",
+                "IT",
+                "Software Engineer",
+                "active",
+            ),
+            employees,
+        )
+
+    def test_indian_phone_number_is_normalized(self):
+        self.assertEqual(webhook_app.normalize_phone("9989309953"), "919989309953")
+        self.assertEqual(webhook_app.normalize_phone("+91 99893 09953"), "919989309953")
 
     @patch("app.requests.post")
     def test_incoming_number_is_saved_and_listed(self, post):

@@ -12,6 +12,13 @@ ACCESS_TOKEN = os.getenv("ACCESS_TOKEN", "")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "")
 ATTENDANCE_FLOW_ID = os.getenv("ATTENDANCE_FLOW_ID", "")
 EMPLOYEE_PHONE_NUMBERS = os.getenv("EMPLOYEE_PHONE_NUMBERS", "")
+MOCK_EMPLOYEES = (
+    ("MOCK001", "910000000001", "Mock Employee One", "Testing", "Tester", "active"),
+    ("MOCK002", "910000000002", "Mock Employee Two", "Testing", "Tester", "active"),
+    ("I2V001", "919989309953", "Archana Singh", "IT", "IT Head", "active"),
+    ("I2V002", "630202065047", "SVS", "Management", "Managing Director", "active"),
+    ("I2V003", "916350369740", "Employee 6350369740", "IT", "Software Engineer", "active"),
+)
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
 DATA_FILE = DATA_DIR / "messages.log"
@@ -70,12 +77,18 @@ def attendance_button_payload(phone):
         "type": "interactive",
         "interactive": {
             "type": "button",
-            "body": {"text": "Your employee number is registered. Do you want to add attendance?"},
+            "body": {"text": "Do you want to add attendance?"},
             "action": {
-                "buttons": [{
-                    "type": "reply",
-                    "reply": {"id": "add_attendance", "title": "Add attendance"},
-                }]
+                "buttons": [
+                    {
+                        "type": "reply",
+                        "reply": {"id": "attendance_yes", "title": "Yes"},
+                    },
+                    {
+                        "type": "reply",
+                        "reply": {"id": "attendance_no", "title": "No"},
+                    },
+                ]
             },
         },
     }
@@ -88,27 +101,99 @@ def initialize_database():
             connection.execute("""
                 CREATE TABLE IF NOT EXISTS employees (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    employee_code TEXT UNIQUE,
                     phone_number TEXT NOT NULL UNIQUE,
-                    name TEXT,
-                    active INTEGER NOT NULL DEFAULT 1
+                    name TEXT NOT NULL DEFAULT '',
+                    department TEXT NOT NULL DEFAULT '',
+                    designation TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            connection.execute("""
+                CREATE TABLE IF NOT EXISTS attendance (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    employee_id INTEGER NOT NULL,
+                    attendance_date TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'Present',
+                    marked_at TEXT NOT NULL,
+                    UNIQUE(employee_id, attendance_date),
+                    FOREIGN KEY (employee_id) REFERENCES employees(id)
                 )
             """)
             numbers = [number.strip().lstrip("+") for number in EMPLOYEE_PHONE_NUMBERS.split(",")]
+            # Add new columns when upgrading a database created by an older app version.
+            existing_columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(employees)")
+            }
+            migrations = {
+                "employee_code": "ALTER TABLE employees ADD COLUMN employee_code TEXT",
+                "department": "ALTER TABLE employees ADD COLUMN department TEXT NOT NULL DEFAULT ''",
+                "designation": "ALTER TABLE employees ADD COLUMN designation TEXT NOT NULL DEFAULT ''",
+                "status": "ALTER TABLE employees ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+                "created_at": "ALTER TABLE employees ADD COLUMN created_at TEXT",
+            }
+            for column, statement in migrations.items():
+                if column not in existing_columns:
+                    connection.execute(statement)
+            connection.executemany("""
+                INSERT INTO employees
+                    (employee_code, phone_number, name, department, designation, status)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(phone_number) DO UPDATE SET
+                    employee_code = excluded.employee_code,
+                    name = excluded.name,
+                    department = excluded.department,
+                    designation = excluded.designation,
+                    status = excluded.status
+            """, MOCK_EMPLOYEES)
             connection.executemany(
-                "INSERT OR IGNORE INTO employees (phone_number) VALUES (?)",
-                [(number,) for number in numbers if number],
+                "INSERT OR IGNORE INTO employees (phone_number, status) VALUES (?, 'active')",
+                [(normalize_phone(number),) for number in numbers if number],
             )
 
 
 def is_registered_employee(phone):
     initialize_database()
-    normalized_phone = str(phone).strip().lstrip("+")
+    normalized_phone = normalize_phone(phone)
     with closing(sqlite3.connect(DATABASE_FILE)) as connection:
         employee = connection.execute(
-            "SELECT 1 FROM employees WHERE phone_number = ? AND active = 1",
+            "SELECT 1 FROM employees WHERE phone_number = ? AND status = 'active'",
             (normalized_phone,),
         ).fetchone()
     return employee is not None
+
+
+def mark_employee_present(phone):
+    """Mark a registered employee present once for the current India date."""
+    initialize_database()
+    normalized_phone = normalize_phone(phone)
+    now = datetime.now(INDIA_TIMEZONE)
+    with closing(sqlite3.connect(DATABASE_FILE)) as connection:
+        with connection:
+            employee = connection.execute(
+                "SELECT id FROM employees WHERE phone_number = ? AND status = 'active'",
+                (normalized_phone,),
+            ).fetchone()
+            if employee is None:
+                return "not_registered"
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO attendance
+                    (employee_id, attendance_date, status, marked_at)
+                VALUES (?, ?, 'Present', ?)
+                """,
+                (employee[0], now.date().isoformat(), now.isoformat()),
+            )
+    return "marked" if cursor.rowcount else "already_marked"
+
+
+def normalize_phone(phone):
+    """Normalize Indian mobile numbers to the format WhatsApp webhooks use."""
+    digits = "".join(character for character in str(phone) if character.isdigit())
+    if len(digits) == 10:
+        return "91" + digits
+    return digits
 
 
 def incoming_action(message):
@@ -316,23 +401,30 @@ def webhook():
             url=f"https://graph.facebook.com/v23.0/{PHONE_NUMBER_ID}/messages"
             headers={"Authorization":f"Bearer {ACCESS_TOKEN}","Content-Type":"application/json"}
             if action == "hi":
-                if is_registered_employee(phone):
-                    payload = attendance_button_payload(phone)
+                payload = attendance_button_payload(phone)
+            elif action == "attendance_yes":
+                attendance_result = mark_employee_present(phone)
+                if attendance_result == "marked":
+                    reply = "Your attendance has been marked Present for today."
+                elif attendance_result == "already_marked":
+                    reply = "Your attendance is already marked Present for today."
                 else:
-                    payload = {
-                        "messaging_product": "whatsapp",
-                        "to": phone,
-                        "type": "text",
-                        "text": {"body": "This phone number is not registered as an employee."},
-                    }
-            elif action == "add_attendance" and ATTENDANCE_FLOW_ID:
-                payload = attendance_flow_payload(phone)
-            elif action == "add_attendance":
+                    reply = (
+                        "You are not an i2V employee. "
+                        "Please contact HR at 9989309953."
+                    )
                 payload = {
                     "messaging_product": "whatsapp",
                     "to": phone,
                     "type": "text",
-                    "text": {"body": "The attendance form is not configured yet. Please contact your administrator."},
+                    "text": {"body": reply},
+                }
+            elif action == "attendance_no":
+                payload = {
+                    "messaging_product": "whatsapp",
+                    "to": phone,
+                    "type": "text",
+                    "text": {"body": DEFAULT_REPLY},
                 }
             else:
                 payload={

@@ -13,6 +13,16 @@ Set employee WhatsApp numbers in international format, without `+`, as the
 comma-separated `EMPLOYEE_PHONE_NUMBERS` value. They are added to the SQLite
 `employees` table when the webhook receives a message.
 
+For local testing, the employee table also contains these mock records:
+- `910000000001` - Mock Employee One
+- `910000000002` - Mock Employee Two
+- `919989309953` - Archana Singh, IT Head, IT, active
+- `630202065047` - SVS, Managing Director, Management, active
+- `916350369740` - Employee 6350369740, Software Engineer, IT, active
+
+Employee numbers are normalized to international WhatsApp format. For example,
+`9989309953` is stored and matched as `919989309953`.
+
 Run locally:
 pip install -r requirements.txt
 python app.py
