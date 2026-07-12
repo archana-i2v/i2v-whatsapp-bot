@@ -14,6 +14,21 @@ DATA_DIR.mkdir(exist_ok=True)
 DATA_FILE = DATA_DIR / "messages.log"
 INDIA_TIMEZONE = ZoneInfo("Asia/Kolkata")
 
+DEFAULT_REPLY = (
+    "Thank you for contacting i2V Consulting Private Limited.\n\n"
+    "We have received your message and will get back to you shortly.\n\n"
+    "For more details call 9989309953."
+)
+
+
+def reply_for_message(text):
+    """Choose an automatic reply for an incoming text message."""
+    replies = {
+        "hi": "Do you want to mark attendance?",
+        "play": "OK, I will send you details of the game.",
+    }
+    return replies.get(text.strip().lower(), DEFAULT_REPLY)
+
 def save_webhook(body):
     record = {
         "received_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -198,7 +213,12 @@ def webhook():
             print(phone,text)
             url=f"https://graph.facebook.com/v23.0/{PHONE_NUMBER_ID}/messages"
             headers={"Authorization":f"Bearer {ACCESS_TOKEN}","Content-Type":"application/json"}
-            payload={"messaging_product":"whatsapp","to":phone,"type":"text","text":{"body":"Thank you for contacting i2V Consulting Private Limited.\n\nWe have received your message and will get back to you shortly.\n\nFor more details call 9989309953."}}
+            payload={
+                "messaging_product": "whatsapp",
+                "to": phone,
+                "type": "text",
+                "text": {"body": reply_for_message(text)},
+            }
             response = requests.post(url,headers=headers,json=payload,timeout=15)
             response.raise_for_status()
         except Exception as e:
