@@ -12,6 +12,14 @@ ACCESS_TOKEN = os.getenv("ACCESS_TOKEN", "")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "")
 ATTENDANCE_FLOW_ID = os.getenv("ATTENDANCE_FLOW_ID", "")
 EMPLOYEE_PHONE_NUMBERS = os.getenv("EMPLOYEE_PHONE_NUMBERS", "")
+I2V_API_BASE_URL = os.getenv(
+    "I2V_API_BASE_URL", "https://log.I2vWorld.Com/I2vUatApi"
+).rstrip("/")
+I2V_API_USERNAME = os.getenv("I2V_API_USERNAME", "Admin")
+I2V_API_PASSWORD = os.getenv("I2V_API_PASSWORD", "Admin")
+I2V_ATTENDANCE_USERNAME = os.getenv("I2V_ATTENDANCE_USERNAME", I2V_API_USERNAME)
+I2V_APP_ID = os.getenv("I2V_APP_ID", "APP001")
+I2V_API_TIMEOUT = int(os.getenv("I2V_API_TIMEOUT", "15"))
 MOCK_EMPLOYEES = (
     ("MOCK001", "910000000001", "Mock Employee One", "Testing", "Tester", "active"),
     ("MOCK002", "910000000002", "Mock Employee Two", "Testing", "Tester", "active"),
@@ -102,9 +110,41 @@ def attendance_button_payload(phone, now=None):
     }
 
 
+def next_actions_payload(phone, attendance_message):
+    """Offer the actions that can follow successful attendance."""
+    return {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": phone,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {"text": attendance_message},
+            "action": {
+                "buttons": [
+                    {
+                        "type": "reply",
+                        "reply": {"id": "add_activity", "title": "Add activity"},
+                    },
+                    {
+                        "type": "reply",
+                        "reply": {"id": "add_expense", "title": "Add expense"},
+                    },
+                    {
+                        "type": "reply",
+                        "reply": {"id": "end_day", "title": "End day"},
+                    },
+                ]
+            },
+        },
+    }
+
+
 def greeting_payload(phone, now=None):
     """Return a holiday message on Sunday or the attendance question otherwise."""
     now = now or india_now()
+    employee_name = employee_name_for_phone(phone)
+    greeting = f"Hi {employee_name}, " if employee_name else "Hi, "
     if now.weekday() == 6:
         return {
             "messaging_product": "whatsapp",
@@ -112,12 +152,96 @@ def greeting_payload(phone, now=None):
             "type": "text",
             "text": {
                 "body": (
-                    f"Today, {now.strftime('%d %b %Y')}, is Sunday. "
+                    f"{greeting}today, {now.strftime('%d %b %Y')}, is Sunday. "
                     "It is a holiday and we are not working today."
                 )
             },
         }
-    return attendance_button_payload(phone, now)
+    payload = attendance_button_payload(phone, now)
+    question = payload["interactive"]["body"]["text"]
+    payload["interactive"]["body"]["text"] = greeting + question
+    return payload
+
+
+def api_response_message(response):
+    """Extract a useful message from either JSON or plain-text API responses."""
+    try:
+        body = response.json()
+    except (ValueError, TypeError):
+        return response.text.strip()
+    if isinstance(body, str):
+        return body.strip()
+    if isinstance(body, dict):
+        for key in ("message", "Message", "response", "Response"):
+            if body.get(key) is not None:
+                return str(body[key]).strip()
+    return str(body).strip()
+
+
+def get_i2v_access_token():
+    """Authenticate with the i2V API and return its JWT."""
+    response = requests.post(
+        f"{I2V_API_BASE_URL}/api/User/Get/UserToken",
+        headers={"Content-Type": "application/json"},
+        json={"UserName": I2V_API_USERNAME, "Password": I2V_API_PASSWORD},
+        timeout=I2V_API_TIMEOUT,
+    )
+    response.raise_for_status()
+    body = response.json()
+    token = body.get("token") or body.get("Token") if isinstance(body, dict) else None
+    if not token:
+        raise ValueError("The i2V token response did not contain a token")
+    return token
+
+
+def validate_i2v_mobile_number(phone, token):
+    """Return active, inactive, or not_found for an i2V mobile number."""
+    response = requests.post(
+        f"{I2V_API_BASE_URL}/api/Validate/MobileNumber",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        json={"MobileNumber": normalize_phone(phone)[-10:]},
+        timeout=I2V_API_TIMEOUT,
+    )
+    response.raise_for_status()
+    message = api_response_message(response).casefold()
+    if "already exists and active" in message:
+        return "active"
+    if "already exists but inactive" in message:
+        return "inactive"
+    if "not exists" in message:
+        return "not_found"
+    raise ValueError(f"Unexpected mobile validation response: {message}")
+
+
+def raise_i2v_attendance(token, now=None):
+    """Raise attendance through i2V and classify its response."""
+    now = now or india_now()
+    response = requests.post(
+        f"{I2V_API_BASE_URL}/api/Raise/Attendence",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "Date": now.date().isoformat(),
+            "UserName": I2V_ATTENDANCE_USERNAME,
+            "AttendenceRaisedOn": now.replace(tzinfo=None).isoformat(timespec="seconds"),
+            "AppId": I2V_APP_ID,
+        },
+        timeout=I2V_API_TIMEOUT,
+    )
+    response.raise_for_status()
+    message = api_response_message(response).casefold()
+    if "attendance raised successfully" in message:
+        return "marked"
+    if "attendence raised successfully" in message:
+        return "marked"
+    if "already have attendence" in message or "already have attendance" in message:
+        return "already_marked"
+    raise ValueError(f"Unexpected attendance response: {message}")
 
 
 def initialize_database():
@@ -188,6 +312,20 @@ def is_registered_employee(phone):
             (normalized_phone,),
         ).fetchone()
     return employee is not None
+
+
+def employee_name_for_phone(phone):
+    """Return the active employee's name for a WhatsApp phone number."""
+    initialize_database()
+    normalized_phone = normalize_phone(phone)
+    with closing(sqlite3.connect(DATABASE_FILE)) as connection:
+        employee = connection.execute(
+            "SELECT name FROM employees WHERE phone_number = ? AND status = 'active'",
+            (normalized_phone,),
+        ).fetchone()
+    if employee and employee[0].strip():
+        return employee[0].strip()
+    return ""
 
 
 def mark_employee_present(phone):
@@ -429,22 +567,53 @@ def webhook():
             if action == "hi":
                 payload = greeting_payload(phone)
             elif action == "attendance_yes":
-                attendance_result = mark_employee_present(phone)
-                if attendance_result == "marked":
-                    reply = "Your attendance has been marked Present for today."
-                elif attendance_result == "already_marked":
-                    reply = "Your attendance is already marked Present for today."
-                else:
-                    reply = (
-                        "You are not an i2V employee. "
-                        "Please contact HR at 9989309953."
-                    )
-                payload = {
-                    "messaging_product": "whatsapp",
-                    "to": phone,
-                    "type": "text",
-                    "text": {"body": reply},
-                }
+                try:
+                    token = get_i2v_access_token()
+                    employee_status = validate_i2v_mobile_number(phone, token)
+                    if employee_status == "active":
+                        attendance_result = raise_i2v_attendance(token)
+                        if attendance_result == "marked":
+                            reply = "You are marked Present. What would you like to do next?"
+                        else:
+                            reply = (
+                                "You are already marked Present for today. "
+                                "What would you like to do next?"
+                            )
+                        payload = next_actions_payload(phone, reply)
+                    elif employee_status == "inactive":
+                        payload = {
+                            "messaging_product": "whatsapp",
+                            "to": phone,
+                            "type": "text",
+                            "text": {
+                                "body": "Your employee account is inactive. Please contact HR."
+                            },
+                        }
+                    else:
+                        payload = {
+                            "messaging_product": "whatsapp",
+                            "to": phone,
+                            "type": "text",
+                            "text": {
+                                "body": (
+                                    "This phone number is not registered as an i2V employee. "
+                                    "Please contact HR at 9989309953."
+                                )
+                            },
+                        }
+                except (requests.RequestException, ValueError) as error:
+                    print(f"i2V attendance API failed: {error}")
+                    payload = {
+                        "messaging_product": "whatsapp",
+                        "to": phone,
+                        "type": "text",
+                        "text": {
+                            "body": (
+                                "We could not mark your attendance right now. "
+                                "Please try again shortly."
+                            )
+                        },
+                    }
             elif action == "attendance_no":
                 payload = {
                     "messaging_product": "whatsapp",

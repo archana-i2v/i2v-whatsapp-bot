@@ -6,6 +6,24 @@ ACCESS_TOKEN=<Meta permanent access token>
 PHONE_NUMBER_ID=<Phone Number ID>
 ATTENDANCE_FLOW_ID=<Published Meta WhatsApp Flow ID>
 EMPLOYEE_PHONE_NUMBERS=919876543210,919999999999
+I2V_API_BASE_URL=https://log.I2vWorld.Com/I2vUatApi
+I2V_API_USERNAME=Admin
+I2V_API_PASSWORD=<API password>
+I2V_ATTENDANCE_USERNAME=Admin
+I2V_APP_ID=APP001
+I2V_API_TIMEOUT=15
+
+When an employee replies **Yes** to the attendance question, the webhook:
+
+1. Generates an i2V API JWT.
+2. Validates the sender's 10-digit mobile number.
+3. Raises attendance when the employee is active.
+4. Offers **Add activity**, **Add expense**, and **End day** buttons.
+
+The supplied validation API only returns an account status, not the employee's
+username. Set `I2V_ATTENDANCE_USERNAME` to the value expected by the attendance
+API. If attendance must be raised against a different username for every phone
+number, the upstream API must provide that phone-to-username mapping.
 
 Create the attendance Flow in WhatsApp Manager, import `attendance_flow.json`,
 publish it, and set its ID as `ATTENDANCE_FLOW_ID` in Render.
