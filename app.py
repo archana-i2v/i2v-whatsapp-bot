@@ -3,7 +3,7 @@ import requests, os, json
 from pathlib import Path
 from datetime import datetime, timezone
 from html import escape
-from urllib.parse import quote, urlsplit
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 app = Flask(__name__)
@@ -14,7 +14,11 @@ DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
 DATA_FILE = DATA_DIR / "messages.log"
 INDIA_TIMEZONE = ZoneInfo("Asia/Kolkata")
-MOCK_GAME_URL = os.getenv("MOCK_GAME_URL", "https://example.com/game")
+GAME_API_URL = os.getenv(
+    "GAME_API_URL",
+    "https://tambolav2-gnfshrhpf2a6byhb.southindia-01.azurewebsites.net/api/v2/join/resolve",
+)
+GAME_API_TIMEOUT = int(os.getenv("GAME_API_TIMEOUT", "15"))
 
 DEFAULT_REPLY = (
     "Thank you for contacting i2V Consulting Private Limited.\n\n"
@@ -46,14 +50,19 @@ def extract_play_token(text):
     return token or None
 
 
-def get_game_url(token):
-    """Mock the future game API call and return the URL for a token.
-
-    Replace this function's body with the real API request when its endpoint and
-    response contract are available. The webhook code only depends on this
-    function returning a URL string.
-    """
-    return f"{MOCK_GAME_URL}?token={quote(token, safe='')}"
+def resolve_game_token(token):
+    """Call the Tambola API and return its token-resolution response."""
+    response = requests.post(
+        GAME_API_URL,
+        headers={"Content-Type": "application/json"},
+        json={"token": token},
+        timeout=GAME_API_TIMEOUT,
+    )
+    response.raise_for_status()
+    result = response.json()
+    if not isinstance(result, dict):
+        raise ValueError("The game API returned an invalid response")
+    return result
 
 
 def game_reply_for_message(text):
@@ -62,10 +71,23 @@ def game_reply_for_message(text):
     if token is None:
         return None
 
-    game_url = get_game_url(token)
+    result = resolve_game_token(token)
+    if result.get("valid") is not True:
+        reason = str(result.get("reason", "")).upper()
+        if reason == "EXPIRED_TOKEN":
+            return "This game token has expired. Please request a new token."
+        if reason == "INVALID_TOKEN":
+            return "This game token is invalid. Please check it and try again."
+        return "This game token could not be validated. Please try again."
+
+    reply_text = result.get("replyText")
+    if isinstance(reply_text, str) and reply_text.strip():
+        return reply_text
+
+    game_url = result.get("joinUrl", "")
     parsed_url = urlsplit(game_url)
     if parsed_url.scheme not in ("http", "https") or not parsed_url.netloc:
-        raise ValueError("The game API returned an invalid URL")
+        raise ValueError("The game API response did not contain replyText or a valid joinUrl")
     return f"Click on '{game_url}' to start the game."
 
 def save_webhook(body):
@@ -252,7 +274,11 @@ def webhook():
             print(phone,text)
             url=f"https://graph.facebook.com/v23.0/{PHONE_NUMBER_ID}/messages"
             headers={"Authorization":f"Bearer {ACCESS_TOKEN}","Content-Type":"application/json"}
-            reply = game_reply_for_message(text) or reply_for_message(text)
+            try:
+                reply = game_reply_for_message(text) or reply_for_message(text)
+            except (requests.RequestException, ValueError) as error:
+                print(f"Game API failed: {error}")
+                reply = "We could not retrieve the game link right now. Please try again shortly."
             payload={
                 "messaging_product": "whatsapp",
                 "to": phone,

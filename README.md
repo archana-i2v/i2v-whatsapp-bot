@@ -4,7 +4,8 @@
 VERIFY_TOKEN=i2vWebhook2026
 ACCESS_TOKEN=<Meta permanent access token>
 PHONE_NUMBER_ID=<Phone Number ID>
-MOCK_GAME_URL=https://example.com/game
+GAME_API_URL=https://tambolav2-gnfshrhpf2a6byhb.southindia-01.azurewebsites.net/api/v2/join/resolve
+GAME_API_TIMEOUT=15
 ATTENDANCE_FLOW_ID=<Published Meta WhatsApp Flow ID>
 EMPLOYEE_PHONE_NUMBERS=919876543210,919999999999
 I2V_API_BASE_URL=https://log.I2vWorld.Com/I2vUatApi
@@ -14,10 +15,9 @@ I2V_ATTENDANCE_USERNAME=Admin
 I2V_APP_ID=APP001
 I2V_API_TIMEOUT=15
 
-Send `play TOKEN` or `play + TOKEN` to receive a game link. The current
-`get_game_url` implementation in `app.py` is a mock that returns
-`MOCK_GAME_URL?token=TOKEN`. Replace that function with the real API call when
-the game API endpoint and response format are available.
+Send `play TOKEN` or `play + TOKEN` using any capitalization. The webhook sends
+the token to the Tambola resolver API and forwards its `replyText` directly to
+the WhatsApp user. Invalid and expired tokens receive a clear error message.
 
 When an employee replies **Yes** to the attendance question, the webhook:
 
