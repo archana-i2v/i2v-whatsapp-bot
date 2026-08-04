@@ -1,37 +1,20 @@
 from flask import Flask, request
-import requests, os, json, sqlite3
+import requests, os, json
 from pathlib import Path
 from datetime import datetime, timezone
 from html import escape
+from urllib.parse import quote, urlsplit
 from zoneinfo import ZoneInfo
-from contextlib import closing
 
 app = Flask(__name__)
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "I2vWebhook2026")
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN", "")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "")
-ATTENDANCE_FLOW_ID = os.getenv("ATTENDANCE_FLOW_ID", "")
-EMPLOYEE_PHONE_NUMBERS = os.getenv("EMPLOYEE_PHONE_NUMBERS", "")
-I2V_API_BASE_URL = os.getenv(
-    "I2V_API_BASE_URL", "https://log.I2vWorld.Com/I2vUatApi"
-).rstrip("/")
-I2V_API_USERNAME = os.getenv("I2V_API_USERNAME", "Admin")
-I2V_API_PASSWORD = os.getenv("I2V_API_PASSWORD", "Admin")
-I2V_ATTENDANCE_USERNAME = os.getenv("I2V_ATTENDANCE_USERNAME", I2V_API_USERNAME)
-I2V_APP_ID = os.getenv("I2V_APP_ID", "APP001")
-I2V_API_TIMEOUT = int(os.getenv("I2V_API_TIMEOUT", "15"))
-MOCK_EMPLOYEES = (
-    ("MOCK001", "910000000001", "Mock Employee One", "Testing", "Tester", "active"),
-    ("MOCK002", "910000000002", "Mock Employee Two", "Testing", "Tester", "active"),
-    ("I2V001", "919989309953", "Archana Singh", "IT", "IT Head", "active"),
-    ("I2V002", "630202065047", "SVS", "Management", "Managing Director", "active"),
-    ("I2V003", "916350369740", "Employee 6350369740", "IT", "Software Engineer", "active"),
-)
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
 DATA_FILE = DATA_DIR / "messages.log"
-DATABASE_FILE = DATA_DIR / "app.db"
 INDIA_TIMEZONE = ZoneInfo("Asia/Kolkata")
+MOCK_GAME_URL = os.getenv("MOCK_GAME_URL", "https://example.com/game")
 
 DEFAULT_REPLY = (
     "Thank you for contacting i2V Consulting Private Limited.\n\n"
@@ -40,337 +23,50 @@ DEFAULT_REPLY = (
 )
 
 
-def india_now():
-    return datetime.now(INDIA_TIMEZONE)
-
-
 def reply_for_message(text):
     """Choose an automatic reply for an incoming text message."""
     replies = {
         "hi": "Do you want to mark attendance?",
+        "Hi": "Do you want to mark attendance?",
         "play": "OK, I will send you details of the game.",
+        "Play": "OK, I will send you details of the game.",
     }
     return replies.get(text.strip().lower(), DEFAULT_REPLY)
 
 
-def attendance_flow_payload(phone):
-    """Build the interactive message that opens the published attendance Flow."""
-    return {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": phone,
-        "type": "interactive",
-        "interactive": {
-            "type": "flow",
-            "header": {"type": "text", "text": "Daily attendance"},
-            "body": {"text": "Mark attendance and enter your day details."},
-            "footer": {"text": "i2V Consulting Private Limited"},
-            "action": {
-                "name": "flow",
-                "parameters": {
-                    "flow_message_version": "3",
-                    "flow_token": f"attendance-{phone}",
-                    "flow_id": ATTENDANCE_FLOW_ID,
-                    "flow_cta": "Mark attendance",
-                    "flow_action": "navigate",
-                    "flow_action_payload": {"screen": "ATTENDANCE"},
-                },
-            },
-        },
-    }
+def extract_play_token(text):
+    """Extract TOKEN from either `play TOKEN` or `play + TOKEN`."""
+    parts = text.strip().split(maxsplit=1)
+    if len(parts) != 2 or parts[0].casefold() != "play":
+        return None
+
+    token = parts[1].strip()
+    if token.startswith("+"):
+        token = token[1:].strip()
+    return token or None
 
 
-def attendance_button_payload(phone, now=None):
-    """Ask a registered employee whether they want to add attendance."""
-    now = now or india_now()
-    formatted_time = now.strftime("%d %b %Y at %I:%M %p IST")
-    return {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": phone,
-        "type": "interactive",
-        "interactive": {
-            "type": "button",
-            "body": {
-                "text": f"Do you want to add attendance for today, {formatted_time}?"
-            },
-            "action": {
-                "buttons": [
-                    {
-                        "type": "reply",
-                        "reply": {"id": "attendance_yes", "title": "Yes"},
-                    },
-                    {
-                        "type": "reply",
-                        "reply": {"id": "attendance_no", "title": "No"},
-                    },
-                ]
-            },
-        },
-    }
+def get_game_url(token):
+    """Mock the future game API call and return the URL for a token.
+
+    Replace this function's body with the real API request when its endpoint and
+    response contract are available. The webhook code only depends on this
+    function returning a URL string.
+    """
+    return f"{MOCK_GAME_URL}?token={quote(token, safe='')}"
 
 
-def next_actions_payload(phone, attendance_message):
-    """Offer the actions that can follow successful attendance."""
-    return {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": phone,
-        "type": "interactive",
-        "interactive": {
-            "type": "button",
-            "body": {"text": attendance_message},
-            "action": {
-                "buttons": [
-                    {
-                        "type": "reply",
-                        "reply": {"id": "add_activity", "title": "Add activity"},
-                    },
-                    {
-                        "type": "reply",
-                        "reply": {"id": "add_expense", "title": "Add expense"},
-                    },
-                    {
-                        "type": "reply",
-                        "reply": {"id": "end_day", "title": "End day"},
-                    },
-                ]
-            },
-        },
-    }
+def game_reply_for_message(text):
+    """Return a game-link reply for a play command, or None for other text."""
+    token = extract_play_token(text)
+    if token is None:
+        return None
 
-
-def greeting_payload(phone, now=None):
-    """Return a holiday message on Sunday or the attendance question otherwise."""
-    now = now or india_now()
-    employee_name = employee_name_for_phone(phone)
-    greeting = f"Hi {employee_name}, " if employee_name else "Hi, "
-    if now.weekday() == 6:
-        return {
-            "messaging_product": "whatsapp",
-            "to": phone,
-            "type": "text",
-            "text": {
-                "body": (
-                    f"{greeting}today, {now.strftime('%d %b %Y')}, is Sunday. "
-                    "It is a holiday and we are not working today."
-                )
-            },
-        }
-    payload = attendance_button_payload(phone, now)
-    question = payload["interactive"]["body"]["text"]
-    payload["interactive"]["body"]["text"] = greeting + question
-    return payload
-
-
-def api_response_message(response):
-    """Extract a useful message from either JSON or plain-text API responses."""
-    try:
-        body = response.json()
-    except (ValueError, TypeError):
-        return response.text.strip()
-    if isinstance(body, str):
-        return body.strip()
-    if isinstance(body, dict):
-        for key in ("message", "Message", "response", "Response"):
-            if body.get(key) is not None:
-                return str(body[key]).strip()
-    return str(body).strip()
-
-
-def get_i2v_access_token():
-    """Authenticate with the i2V API and return its JWT."""
-    response = requests.post(
-        f"{I2V_API_BASE_URL}/api/User/Get/UserToken",
-        headers={"Content-Type": "application/json"},
-        json={"UserName": I2V_API_USERNAME, "Password": I2V_API_PASSWORD},
-        timeout=I2V_API_TIMEOUT,
-    )
-    response.raise_for_status()
-    body = response.json()
-    token = body.get("token") or body.get("Token") if isinstance(body, dict) else None
-    if not token:
-        raise ValueError("The i2V token response did not contain a token")
-    return token
-
-
-def validate_i2v_mobile_number(phone, token):
-    """Return active, inactive, or not_found for an i2V mobile number."""
-    response = requests.post(
-        f"{I2V_API_BASE_URL}/api/Validate/MobileNumber",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
-        json={"MobileNumber": normalize_phone(phone)[-10:]},
-        timeout=I2V_API_TIMEOUT,
-    )
-    response.raise_for_status()
-    message = api_response_message(response).casefold()
-    if "already exists and active" in message:
-        return "active"
-    if "already exists but inactive" in message:
-        return "inactive"
-    if "not exists" in message:
-        return "not_found"
-    raise ValueError(f"Unexpected mobile validation response: {message}")
-
-
-def raise_i2v_attendance(token, now=None):
-    """Raise attendance through i2V and classify its response."""
-    now = now or india_now()
-    response = requests.post(
-        f"{I2V_API_BASE_URL}/api/Raise/Attendence",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "Date": now.date().isoformat(),
-            "UserName": I2V_ATTENDANCE_USERNAME,
-            "AttendenceRaisedOn": now.replace(tzinfo=None).isoformat(timespec="seconds"),
-            "AppId": I2V_APP_ID,
-        },
-        timeout=I2V_API_TIMEOUT,
-    )
-    response.raise_for_status()
-    message = api_response_message(response).casefold()
-    if "attendance raised successfully" in message:
-        return "marked"
-    if "attendence raised successfully" in message:
-        return "marked"
-    if "already have attendence" in message or "already have attendance" in message:
-        return "already_marked"
-    raise ValueError(f"Unexpected attendance response: {message}")
-
-
-def initialize_database():
-    """Create the employee table and add numbers supplied by the environment."""
-    with closing(sqlite3.connect(DATABASE_FILE)) as connection:
-        with connection:
-            connection.execute("""
-                CREATE TABLE IF NOT EXISTS employees (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    employee_code TEXT UNIQUE,
-                    phone_number TEXT NOT NULL UNIQUE,
-                    name TEXT NOT NULL DEFAULT '',
-                    department TEXT NOT NULL DEFAULT '',
-                    designation TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL DEFAULT 'active',
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            connection.execute("""
-                CREATE TABLE IF NOT EXISTS attendance (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    employee_id INTEGER NOT NULL,
-                    attendance_date TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'Present',
-                    marked_at TEXT NOT NULL,
-                    UNIQUE(employee_id, attendance_date),
-                    FOREIGN KEY (employee_id) REFERENCES employees(id)
-                )
-            """)
-            numbers = [number.strip().lstrip("+") for number in EMPLOYEE_PHONE_NUMBERS.split(",")]
-            # Add new columns when upgrading a database created by an older app version.
-            existing_columns = {
-                row[1] for row in connection.execute("PRAGMA table_info(employees)")
-            }
-            migrations = {
-                "employee_code": "ALTER TABLE employees ADD COLUMN employee_code TEXT",
-                "department": "ALTER TABLE employees ADD COLUMN department TEXT NOT NULL DEFAULT ''",
-                "designation": "ALTER TABLE employees ADD COLUMN designation TEXT NOT NULL DEFAULT ''",
-                "status": "ALTER TABLE employees ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
-                "created_at": "ALTER TABLE employees ADD COLUMN created_at TEXT",
-            }
-            for column, statement in migrations.items():
-                if column not in existing_columns:
-                    connection.execute(statement)
-            connection.executemany("""
-                INSERT INTO employees
-                    (employee_code, phone_number, name, department, designation, status)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(phone_number) DO UPDATE SET
-                    employee_code = excluded.employee_code,
-                    name = excluded.name,
-                    department = excluded.department,
-                    designation = excluded.designation,
-                    status = excluded.status
-            """, MOCK_EMPLOYEES)
-            connection.executemany(
-                "INSERT OR IGNORE INTO employees (phone_number, status) VALUES (?, 'active')",
-                [(normalize_phone(number),) for number in numbers if number],
-            )
-
-
-def is_registered_employee(phone):
-    initialize_database()
-    normalized_phone = normalize_phone(phone)
-    with closing(sqlite3.connect(DATABASE_FILE)) as connection:
-        employee = connection.execute(
-            "SELECT 1 FROM employees WHERE phone_number = ? AND status = 'active'",
-            (normalized_phone,),
-        ).fetchone()
-    return employee is not None
-
-
-def employee_name_for_phone(phone):
-    """Return the active employee's name for a WhatsApp phone number."""
-    initialize_database()
-    normalized_phone = normalize_phone(phone)
-    with closing(sqlite3.connect(DATABASE_FILE)) as connection:
-        employee = connection.execute(
-            "SELECT name FROM employees WHERE phone_number = ? AND status = 'active'",
-            (normalized_phone,),
-        ).fetchone()
-    if employee and employee[0].strip():
-        return employee[0].strip()
-    return ""
-
-
-def mark_employee_present(phone):
-    """Mark a registered employee present once for the current India date."""
-    initialize_database()
-    normalized_phone = normalize_phone(phone)
-    now = datetime.now(INDIA_TIMEZONE)
-    with closing(sqlite3.connect(DATABASE_FILE)) as connection:
-        with connection:
-            employee = connection.execute(
-                "SELECT id FROM employees WHERE phone_number = ? AND status = 'active'",
-                (normalized_phone,),
-            ).fetchone()
-            if employee is None:
-                return "not_registered"
-            cursor = connection.execute(
-                """
-                INSERT OR IGNORE INTO attendance
-                    (employee_id, attendance_date, status, marked_at)
-                VALUES (?, ?, 'Present', ?)
-                """,
-                (employee[0], now.date().isoformat(), now.isoformat()),
-            )
-    return "marked" if cursor.rowcount else "already_marked"
-
-
-def normalize_phone(phone):
-    """Normalize Indian mobile numbers to the format WhatsApp webhooks use."""
-    digits = "".join(character for character in str(phone) if character.isdigit())
-    if len(digits) == 10:
-        return "91" + digits
-    return digits
-
-
-def incoming_action(message):
-    """Return normalized text or a reply-button ID from an inbound message."""
-    if message.get("type", "text") == "text":
-        return message.get("text", {}).get("body", "").strip().lower()
-    if message.get("type") == "interactive":
-        interactive = message.get("interactive", {})
-        reply = interactive.get("button_reply") or interactive.get("list_reply") or {}
-        return reply.get("id", "").strip().lower()
-    if message.get("type") == "button":
-        return message.get("button", {}).get("payload", "").strip().lower()
-    return ""
+    game_url = get_game_url(token)
+    parsed_url = urlsplit(game_url)
+    if parsed_url.scheme not in ("http", "https") or not parsed_url.netloc:
+        raise ValueError("The game API returned an invalid URL")
+    return f"Click on '{game_url}' to start the game."
 
 def save_webhook(body):
     record = {
@@ -447,13 +143,6 @@ def message_text(message):
         return message.get("button", {}).get("text", "[button response]")
     if message_type == "interactive":
         interactive = message.get("interactive", {})
-        flow_reply = interactive.get("nfm_reply", {})
-        if flow_reply.get("response_json"):
-            try:
-                response = json.loads(flow_reply["response_json"])
-                return "Attendance form: " + json.dumps(response, ensure_ascii=False)
-            except (json.JSONDecodeError, TypeError):
-                return flow_reply["response_json"]
         response = interactive.get("button_reply") or interactive.get("list_reply") or {}
         return response.get("title") or response.get("id") or "[interactive response]"
 
@@ -560,74 +249,16 @@ def webhook():
         try:
             phone=msg["from"]
             text=msg.get("text",{}).get("body","")
-            action = incoming_action(msg)
             print(phone,text)
             url=f"https://graph.facebook.com/v23.0/{PHONE_NUMBER_ID}/messages"
             headers={"Authorization":f"Bearer {ACCESS_TOKEN}","Content-Type":"application/json"}
-            if action == "hi":
-                payload = greeting_payload(phone)
-            elif action == "attendance_yes":
-                try:
-                    token = get_i2v_access_token()
-                    employee_status = validate_i2v_mobile_number(phone, token)
-                    if employee_status == "active":
-                        attendance_result = raise_i2v_attendance(token)
-                        if attendance_result == "marked":
-                            reply = "You are marked Present. What would you like to do next?"
-                        else:
-                            reply = (
-                                "You are already marked Present for today. "
-                                "What would you like to do next?"
-                            )
-                        payload = next_actions_payload(phone, reply)
-                    elif employee_status == "inactive":
-                        payload = {
-                            "messaging_product": "whatsapp",
-                            "to": phone,
-                            "type": "text",
-                            "text": {
-                                "body": "Your employee account is inactive. Please contact HR."
-                            },
-                        }
-                    else:
-                        payload = {
-                            "messaging_product": "whatsapp",
-                            "to": phone,
-                            "type": "text",
-                            "text": {
-                                "body": (
-                                    "This phone number is not registered as an i2V employee. "
-                                    "Please contact HR at 9989309953."
-                                )
-                            },
-                        }
-                except (requests.RequestException, ValueError) as error:
-                    print(f"i2V attendance API failed: {error}")
-                    payload = {
-                        "messaging_product": "whatsapp",
-                        "to": phone,
-                        "type": "text",
-                        "text": {
-                            "body": (
-                                "We could not mark your attendance right now. "
-                                "Please try again shortly."
-                            )
-                        },
-                    }
-            elif action == "attendance_no":
-                payload = {
-                    "messaging_product": "whatsapp",
-                    "to": phone,
-                    "type": "text",
-                    "text": {"body": DEFAULT_REPLY},
-                }
-            else:
-                payload={
-                    "messaging_product": "whatsapp",
-                    "to": phone,
-                    "type": "text",
-                    "text": {"body": reply_for_message(text)},
-                }
+            reply = game_reply_for_message(text) or reply_for_message(text)
+            payload={
+                "messaging_product": "whatsapp",
+                "to": phone,
+                "type": "text",
+                "text": {"body": reply},
+            }
             response = requests.post(url,headers=headers,json=payload,timeout=15)
             response.raise_for_status()
         except Exception as e:

@@ -4,6 +4,7 @@
 VERIFY_TOKEN=i2vWebhook2026
 ACCESS_TOKEN=<Meta permanent access token>
 PHONE_NUMBER_ID=<Phone Number ID>
+MOCK_GAME_URL=https://example.com/game
 ATTENDANCE_FLOW_ID=<Published Meta WhatsApp Flow ID>
 EMPLOYEE_PHONE_NUMBERS=919876543210,919999999999
 I2V_API_BASE_URL=https://log.I2vWorld.Com/I2vUatApi
@@ -12,6 +13,11 @@ I2V_API_PASSWORD=<API password>
 I2V_ATTENDANCE_USERNAME=Admin
 I2V_APP_ID=APP001
 I2V_API_TIMEOUT=15
+
+Send `play TOKEN` or `play + TOKEN` to receive a game link. The current
+`get_game_url` implementation in `app.py` is a mock that returns
+`MOCK_GAME_URL?token=TOKEN`. Replace that function with the real API call when
+the game API endpoint and response format are available.
 
 When an employee replies **Yes** to the attendance question, the webhook:
 
@@ -51,17 +57,15 @@ Deploy to Render:
 - Build: pip install -r requirements.txt
 - Start: gunicorn app:app
 
-Webhook URL:
-https://YOUR-RENDER-APP.onrender.com/webhook
+After deployment, replace `<service-name>` with the service name shown in the
+Render dashboard. For example: `https://<service-name>.onrender.com/webhook`.
 
-View captured sender numbers:
-https://YOUR-RENDER-APP.onrender.com/numbers
+Available routes:
 
-View numbers that sent "hi":
-https://YOUR-RENDER-APP.onrender.com/hi-numbers
-
-View phone numbers, message dates/times, and message contents:
-https://YOUR-RENDER-APP.onrender.com/messages
+- Webhook callback and verification: `/webhook`
+- Captured sender numbers: `/numbers`
+- Numbers that sent "hi": `/hi-numbers`
+- Phone numbers, message times, and message contents: `/messages`
 
 Run tests:
 python -m unittest -v
