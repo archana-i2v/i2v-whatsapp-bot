@@ -16,8 +16,9 @@ I2V_APP_ID=APP001
 I2V_API_TIMEOUT=15
 
 Send `play TOKEN` or `play + TOKEN` using any capitalization. The webhook sends
-the token to the Tambola resolver API and forwards its `replyText` directly to
-the WhatsApp user. Invalid and expired tokens receive a clear error message.
+the user-provided token to the Tambola resolver API as the `token` query
+parameter and forwards its `replyText` directly to the WhatsApp user. Invalid
+and expired tokens receive a clear error message.
 
 When an employee replies **Yes** to the attendance question, the webhook:
 

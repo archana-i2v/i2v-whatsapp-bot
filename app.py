@@ -52,10 +52,9 @@ def extract_play_token(text):
 
 def resolve_game_token(token):
     """Call the Tambola API and return its token-resolution response."""
-    response = requests.post(
+    response = requests.get(
         GAME_API_URL,
-        headers={"Content-Type": "application/json"},
-        json={"token": token},
+        params={"token": token},
         timeout=GAME_API_TIMEOUT,
     )
     response.raise_for_status()

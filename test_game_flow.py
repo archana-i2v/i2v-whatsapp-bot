@@ -3,6 +3,8 @@ from unittest.mock import patch
 
 import app as webhook_app
 
+TEST_TOKEN = "USER_PROVIDED_TOKEN"
+
 
 def webhook_payload(text):
     return {
@@ -30,36 +32,35 @@ class GameFlowTests(unittest.TestCase):
         self.assertIsNone(webhook_app.extract_play_token("play"))
         self.assertIsNone(webhook_app.extract_play_token("display abc123"))
 
-    @patch("app.requests.post")
-    def test_resolver_api_receives_token(self, post):
-        post.return_value.json.return_value = {
+    @patch("app.requests.get")
+    def test_resolver_api_receives_user_token_as_query_parameter(self, get):
+        get.return_value.json.return_value = {
             "valid": True,
-            "joinUrl": "https://game.test/join/TBLS6L39C",
+            "joinUrl": f"https://game.test/join/{TEST_TOKEN}",
             "replyText": "Welcome to Tambola!",
         }
-        post.return_value.raise_for_status.return_value = None
+        get.return_value.raise_for_status.return_value = None
 
-        result = webhook_app.resolve_game_token("TBLS6L39C")
+        result = webhook_app.resolve_game_token(TEST_TOKEN)
 
         self.assertTrue(result["valid"])
-        post.assert_called_once_with(
+        get.assert_called_once_with(
             webhook_app.GAME_API_URL,
-            headers={"Content-Type": "application/json"},
-            json={"token": "TBLS6L39C"},
+            params={"token": TEST_TOKEN},
             timeout=webhook_app.GAME_API_TIMEOUT,
         )
 
     @patch("app.resolve_game_token")
     def test_api_reply_text_is_forwarded_unchanged(self, resolve):
-        reply_text = "🎉 Welcome to Bayer Tambola!\nhttps://game.test/join/TBLS6L39C"
+        reply_text = f"🎉 Welcome to Bayer Tambola!\nhttps://game.test/join/{TEST_TOKEN}"
         resolve.return_value = {
             "valid": True,
-            "joinUrl": "https://game.test/join/TBLS6L39C",
+            "joinUrl": f"https://game.test/join/{TEST_TOKEN}",
             "replyText": reply_text,
         }
 
-        self.assertEqual(webhook_app.game_reply_for_message("PlAy TBLS6L39C"), reply_text)
-        resolve.assert_called_once_with("TBLS6L39C")
+        self.assertEqual(webhook_app.game_reply_for_message(f"PlAy {TEST_TOKEN}"), reply_text)
+        resolve.assert_called_once_with(TEST_TOKEN)
 
     @patch("app.resolve_game_token", return_value={"valid": False, "reason": "EXPIRED_TOKEN"})
     def test_expired_token_has_clear_reply(self, resolve):
@@ -73,19 +74,19 @@ class GameFlowTests(unittest.TestCase):
         post.return_value.raise_for_status.return_value = None
         resolve.return_value = {
             "valid": True,
-            "joinUrl": "https://game.test/join/TBLS6L39C",
-            "replyText": "🎉 Welcome!\nhttps://game.test/join/TBLS6L39C",
+            "joinUrl": f"https://game.test/join/{TEST_TOKEN}",
+            "replyText": f"🎉 Welcome!\nhttps://game.test/join/{TEST_TOKEN}",
         }
 
-        response = self.client.post("/webhook", json=webhook_payload("PLAY + TBLS6L39C"))
+        response = self.client.post("/webhook", json=webhook_payload(f"PLAY + {TEST_TOKEN}"))
 
         self.assertEqual(response.status_code, 200)
-        resolve.assert_called_once_with("TBLS6L39C")
+        resolve.assert_called_once_with(TEST_TOKEN)
         sent = post.call_args.kwargs["json"]
         self.assertEqual(sent["to"], "919876543210")
         self.assertEqual(
             sent["text"]["body"],
-            "🎉 Welcome!\nhttps://game.test/join/TBLS6L39C",
+            f"🎉 Welcome!\nhttps://game.test/join/{TEST_TOKEN}",
         )
 
 
