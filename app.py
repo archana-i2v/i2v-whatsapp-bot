@@ -50,8 +50,8 @@ def extract_play_token(text):
     return token or None
 
 
-def resolve_game_token(token):
-    """Call the Tambola API and return its token-resolution response."""
+def resolve_game_token(token, whatsapp_phone_number):
+    """Resolve a token and associate the result with its WhatsApp sender."""
     response = requests.get(
         GAME_API_URL,
         params={"token": token},
@@ -61,16 +61,17 @@ def resolve_game_token(token):
     result = response.json()
     if not isinstance(result, dict):
         raise ValueError("The game API returned an invalid response")
+    result["whatsappPhoneNumber"] = whatsapp_phone_number
     return result
 
 
-def game_reply_for_message(text):
+def game_reply_for_message(text, whatsapp_phone_number):
     """Return a game-link reply for a play command, or None for other text."""
     token = extract_play_token(text)
     if token is None:
         return None
 
-    result = resolve_game_token(token)
+    result = resolve_game_token(token, whatsapp_phone_number)
     if result.get("valid") is not True:
         reason = str(result.get("reason", "")).upper()
         if reason == "EXPIRED_TOKEN":
@@ -210,6 +211,15 @@ def load_message_rows():
 def home():
     return "i2V WhatsApp Webhook Running"
 
+
+@app.get("/health")
+def health():
+    """Expose deployment health and the Render Git revision."""
+    return {
+        "status": "ok",
+        "commit": os.getenv("RENDER_GIT_COMMIT", "local"),
+    }
+
 @app.get("/webhook")
 def verify():
     if request.args.get("hub.mode")=="subscribe" and request.args.get("hub.verify_token")==VERIFY_TOKEN:
@@ -274,7 +284,7 @@ def webhook():
             url=f"https://graph.facebook.com/v23.0/{PHONE_NUMBER_ID}/messages"
             headers={"Authorization":f"Bearer {ACCESS_TOKEN}","Content-Type":"application/json"}
             try:
-                reply = game_reply_for_message(text) or reply_for_message(text)
+                reply = game_reply_for_message(text, phone) or reply_for_message(text)
             except (requests.RequestException, ValueError) as error:
                 print(f"Game API failed: {error}")
                 reply = "We could not retrieve the game link right now. Please try again shortly."

@@ -18,7 +18,8 @@ I2V_API_TIMEOUT=15
 Send `play TOKEN` or `play + TOKEN` using any capitalization. The webhook sends
 the user-provided token to the Tambola resolver API as the `token` query
 parameter and forwards its `replyText` directly to the WhatsApp user. Invalid
-and expired tokens receive a clear error message.
+and expired tokens receive a clear error message. The resolver result also
+contains `whatsappPhoneNumber`, populated from the incoming WhatsApp message.
 
 When an employee replies **Yes** to the attendance question, the webhook:
 
@@ -64,6 +65,7 @@ Render dashboard. For example: `https://<service-name>.onrender.com/webhook`.
 Available routes:
 
 - Webhook callback and verification: `/webhook`
+- Deployment health and Git revision: `/health`
 - Captured sender numbers: `/numbers`
 - Numbers that sent "hi": `/hi-numbers`
 - Phone numbers, message times, and message contents: `/messages`
